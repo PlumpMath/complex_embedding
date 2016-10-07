@@ -7,20 +7,31 @@ import tensorflow as tf
 
 from data import sym, assym
 
-trainX = np.array(sym[0])
-validX = np.array(sym[1])
-testX = np.array(sym[2])
-
 # 1. read data -> triplets
 # 2. build theano graph with slices
 # 3. train
 
+trainX = np.array(sym[0])
+validX = np.array(sym[1])
+testX = np.array(sym[2])
+
+trainX = np.array([[i,0,j] for i in range(10) for j in range(10) if sym[0][i][j]!=0])
+trainY = np.array([sym[0][i][j] for i in range(10) for j in range(10) if sym[0][i][j]!=0])
+
+validX = np.array([[i,0,j] for i in range(10) for j in range(10) if sym[1][i][j]!=0])
+validY = np.array([sym[1][i][j] for i in range(10) for j in range(10) if sym[1][i][j]!=0])
+
+
 embedding_size = 5
-entity_count = 10
+entity_count = trainY.shape[0]
 
 
-ereals = tf.Variable(tf.random_normal([entity_count, embedding_size], stddev=1.0/embedding_size), name="ereals")
-ecomplex = tf.Variable(tf.random_normal([entity_count, embedding_size], stddev=1.0/embedding_size), name="ecomplex")
+ereals = tf.Variable(tf.random_normal([entity_count, embedding_size],
+                                      stddev=1.0/embedding_size),
+                     name="ereals")
+ecomplex = tf.Variable(tf.random_normal([entity_count, embedding_size],
+                                        stddev=1.0/embedding_size),
+                       name="ecomplex")
 
 relation_count = 2
 
@@ -34,7 +45,6 @@ si = tf.placeholder(tf.int32, name="subject_index")
 ri = tf.placeholder(tf.int32, name="relation_index")
 oi = tf.placeholder(tf.int32, name="object_index")
 
-Ys = tf.placeholder(tf.float32, name="Ys")
 
 def pred(esr, esc, wr, wc, eor, eoc):
     # formula 11 from paper
@@ -43,20 +53,50 @@ def pred(esr, esc, wr, wc, eor, eoc):
         + tf.reduce_sum(wc*esr*eoc, 1) \
         + tf.reduce_sum(wc*esc*eor, 1)
 
+
 def regul(esr, esc, wr, wc, eor, eoc, lmbda=0.03): # TODO from paper
     return lmbda*(tf.reduce_mean(esr) + tf.reduce_mean(esc) + \
                   tf.reduce_mean(wr) + tf.reduce_mean(wc) + \
                   tf.reduce_mean(eor) + tf.reduce_mean(eoc))
 
+
 def loss(esr, esc, wr, wc, eor, eoc, Ys, activation=lambda Ys, pred: tf.log(1+tf.exp(-Ys*pred))):
     p = pred(esr, esc, wr, wc, eor, eoc)
 
-    l = activation(Ys,p) + regul(esr, esc, wr, wc, eor, eoc)
+    l = activation(Ys, p) + regul(esr, esc, wr, wc, eor, eoc)
 
     return p, l
 
 
-def train(epochs=10, learning_rate=0.001, batch_size=2):
+def accuracy(msg, dataX, dataY):
+    trainX = dataX
+    trainY = dataY
+    entity_count = dataY.shape[0]
+    tsub_indices = tf.placeholder(tf.int32, shape=(entity_count), name="sub_indices")
+    trel_indices = tf.placeholder(tf.int32, shape=(entity_count), name="rel_indices")
+    tobj_indices = tf.placeholder(tf.int32, shape=(entity_count), name="obj_indices")
+
+    tesr = tf.gather(ereals, tsub_indices)
+    tesc = tf.gather(ereals, tsub_indices)
+    twr = tf.gather(wreals, trel_indices)
+    twc = tf.gather(wcomplex, trel_indices)
+    teor = tf.gather(ereals, tobj_indices)
+    teoc = tf.gather(ereals, tobj_indices)
+
+    tYs = tf.placeholder(tf.float32, shape=trainY.shape, name="tYs")
+    tp, tl = loss(tesr, tesc, twr, twc, teor, teoc, tYs)
+
+    correct_prediction = tf.cast(tp*tYs >= 0., tf.bool)
+    accuracy = tf.reduce_mean(tf.cast(correct_prediction, "float"))
+
+    print(msg, accuracy.eval({tsub_indices: trainX.T[0],
+                              trel_indices: trainX.T[1],
+                              tobj_indices: trainX.T[2],
+                              tYs: trainY}, sess))
+
+
+def train(sess, trainX, trainY, validX, validY,
+          epochs=10, learning_rate=0.001, batch_size=3, accuracy_step=10):
     # prepare slicing
     sub_indices = tf.placeholder(tf.int32, shape=(batch_size), name="sub_indices")
     rel_indices = tf.placeholder(tf.int32, shape=(batch_size), name="rel_indices")
@@ -70,33 +110,29 @@ def train(epochs=10, learning_rate=0.001, batch_size=2):
     eoc = tf.gather(ereals, obj_indices)
 
 
+    Ys = tf.placeholder(tf.float32, name="Ys")
     # calculate loss
     p, l = loss(esr, esc, wr, wc, eor, eoc, Ys)
 
     optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate).minimize(l)
     init = tf.initialize_all_variables().run()
 
-    for i in range(epochs):
-        for o in range(0, entity_count, batch_size):
-            print(o, batch_size)
-            sess.run(optimizer, {sub_indices: [0,1],
-                                 rel_indices: [0,0],
-                                 obj_indices: [2,3],
-                                 Ys: [0,1]})
+    for epoch in range(epochs):
+        for o in range(0, trainY.shape[0]-1, batch_size):
+            sess.run(optimizer, {sub_indices: trainX.T[0,o:o+batch_size],
+                                 rel_indices: trainX.T[1,o:o+batch_size],
+                                 obj_indices: trainX.T[2,o:o+batch_size],
+                                 Ys: trainY[o:o+batch_size]})
+
+        if epoch % accuracy_step == 0:
+            accuracy("Training accuracy:", trainX, trainY)
+            accuracy("Validation accuracy:", validX, validY)
 
 
-#        for si_ in range(10):
-#            for oi_ in range(10):
-#                if(trainX[si_, oi_] != 0):
+sess = tf.InteractiveSession()
+train(sess, trainX, trainY, validX, validY, epochs=100)
 
-        #print([pred(si, ri, oi).eval({si: si_, ri: 0, oi: 0}, sess)
-        #       for si_ in range(5)])
-        #print([trainX[si_, 0] for si_ in range(5)])
-        #print([pred(si, ri, oi).eval({si: 6, ri: 0, oi: 0}, sess)], -1)
-        #print([pred(si, ri, oi).eval({si: 9, ri: 0, oi: 2}, sess)], 1)
 
-    # TODO accuracy on training set
-    # TODO accuracy on valid set
 
-#sess = tf.InteractiveSession()
-#train(epochs=100)
+
+
