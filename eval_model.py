@@ -24,63 +24,79 @@ ecomplex = tf.Variable(tf.random_normal([entity_count, embedding_size], stddev=1
 
 relation_count = 2
 
-wreals = tf.Variable(tf.random_normal([relation_count, embedding_size], stddev=1.0/embedding_size), name="wreals")
-wcomplex = tf.Variable(tf.random_normal([relation_count, embedding_size], stddev=1.0/embedding_size), name="wcomplex")
-
-
-batch_size = 1 # TODO needs tensorflow multidim slicing, which didn't work as expected
+wreals = tf.Variable(tf.random_normal([relation_count, embedding_size],
+                                      stddev=1.0/embedding_size), name="wreals")
+wcomplex = tf.Variable(tf.random_normal([relation_count, embedding_size],
+                                        stddev=1.0/embedding_size), name="wcomplex")
 
 
 si = tf.placeholder(tf.int32, name="subject_index")
 ri = tf.placeholder(tf.int32, name="relation_index")
 oi = tf.placeholder(tf.int32, name="object_index")
 
-Y = tf.placeholder(tf.float32, name="Y")
+Ys = tf.placeholder(tf.float32, name="Ys")
 
-def pred(si,ri,oi):
+def pred(esr, esc, wr, wc, eor, eoc):
     # formula 11 from paper
-    return tf.reduce_sum(wreals[ri,:]*ereals[si,:]*ereals[oi,:], 0) \
-        + tf.reduce_sum(wreals[ri,:]*ecomplex[si,:]*ecomplex[oi,:], 0) \
-        + tf.reduce_sum(wcomplex[ri,:]*ereals[si,:]*ecomplex[oi,:], 0) \
-        + tf.reduce_sum(wcomplex[ri,:]*ecomplex[si,:]*ereals[oi,:], 0)
+    return tf.reduce_sum(wr*esr*eor, 1) \
+        + tf.reduce_sum(wr*esc*eoc, 1) \
+        + tf.reduce_sum(wc*esr*eoc, 1) \
+        + tf.reduce_sum(wc*esc*eor, 1)
 
-def regul(si, ri, oi, lmbda=0.03): # TODO from paper
-    return lmbda*(tf.reduce_mean(ereals[si]) + tf.reduce_mean(ecomplex[si]) + \
-                  tf.reduce_mean(wreals[ri]) + tf.reduce_mean(wcomplex[ri]) + \
-                  tf.reduce_mean(ereals[oi]) + tf.reduce_mean(ecomplex[oi]))
+def regul(esr, esc, wr, wc, eor, eoc, lmbda=0.03): # TODO from paper
+    return lmbda*(tf.reduce_mean(esr) + tf.reduce_mean(esc) + \
+                  tf.reduce_mean(wr) + tf.reduce_mean(wc) + \
+                  tf.reduce_mean(eor) + tf.reduce_mean(eoc))
 
-def loss(si, ri, oi, Y, activation=lambda Y, pred: tf.log(1+tf.exp(-Y*pred))):
-    p = pred(si, ri, oi)
+def loss(esr, esc, wr, wc, eor, eoc, Ys, activation=lambda Ys, pred: tf.log(1+tf.exp(-Ys*pred))):
+    p = pred(esr, esc, wr, wc, eor, eoc)
 
-    l = activation(Y,p) + regul(si, ri, oi)
+    l = activation(Ys,p) + regul(esr, esc, wr, wc, eor, eoc)
 
-    return l
+    return p, l
 
 
-def train(epochs=10, learning_rate=0.001):
-    l = loss(si, ri, oi, Y)
+def train(epochs=10, learning_rate=0.001, batch_size=2):
+    # prepare slicing
+    sub_indices = tf.placeholder(tf.int32, shape=(batch_size), name="sub_indices")
+    rel_indices = tf.placeholder(tf.int32, shape=(batch_size), name="rel_indices")
+    obj_indices = tf.placeholder(tf.int32, shape=(batch_size), name="obj_indices")
+
+    esr = tf.gather(ereals, sub_indices)
+    esc = tf.gather(ereals, sub_indices)
+    wr = tf.gather(wreals, rel_indices)
+    wc = tf.gather(wcomplex, rel_indices)
+    eor = tf.gather(ereals, obj_indices)
+    eoc = tf.gather(ereals, obj_indices)
+
+
+    # calculate loss
+    p, l = loss(esr, esc, wr, wc, eor, eoc, Ys)
 
     optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate).minimize(l)
     init = tf.initialize_all_variables().run()
 
-    triple_count=10
-
     for i in range(epochs):
-        for si_ in range(10):
-            for oi_ in range(10):
-                if(trainX[si_, oi_] != 0):
-                    sess.run(optimizer, {si: si_, ri: 0, oi: oi_, Y: trainX[si_, oi_]})
+        for o in range(0, entity_count, batch_size):
+            print(o, batch_size)
+            sess.run(optimizer, {sub_indices: [0,1],
+                                 rel_indices: [0,0],
+                                 obj_indices: [2,3],
+                                 Ys: [0,1]})
+
+
+#        for si_ in range(10):
+#            for oi_ in range(10):
+#                if(trainX[si_, oi_] != 0):
 
         #print([pred(si, ri, oi).eval({si: si_, ri: 0, oi: 0}, sess)
         #       for si_ in range(5)])
         #print([trainX[si_, 0] for si_ in range(5)])
-        print([pred(si, ri, oi).eval({si: 6, ri: 0, oi: 0}, sess)], -1)
-        print([pred(si, ri, oi).eval({si: 9, ri: 0, oi: 2}, sess)], 1)
+        #print([pred(si, ri, oi).eval({si: 6, ri: 0, oi: 0}, sess)], -1)
+        #print([pred(si, ri, oi).eval({si: 9, ri: 0, oi: 2}, sess)], 1)
 
     # TODO accuracy on training set
     # TODO accuracy on valid set
 
-sess = tf.InteractiveSession()
-
-train(epochs=100)
-
+#sess = tf.InteractiveSession()
+#train(epochs=100)
